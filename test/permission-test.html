@@ -1,0 +1,135 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>AutoAccept Test</title>
+<style>
+  body { font: 14px "Segoe UI", sans-serif; background: #1e1e1e; color: #ddd; margin: 0; padding: 14px; }
+  button { font: inherit; padding: 4px 12px; border-radius: 4px; border: 1px solid #555; background: #333; color: #eee; cursor: pointer; }
+  button.primary { background: #0e639c; border-color: #0e639c; }
+  button:disabled { opacity: .5; cursor: default; }
+  .toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: #2b2b2b; border-radius: 6px; }
+  .chat { margin-top: 110px; min-height: 110px; }
+  .card { border: 1px solid #444; border-radius: 6px; padding: 12px; background: #252526; width: 420px; }
+  .card .buttons { margin-top: 10px; display: flex; gap: 8px; }
+  .decoys { margin-top: 110px; display: flex; flex-direction: column; gap: 70px; }
+  #log { margin-top: 10px; font: 12px Consolas, monospace; white-space: pre; color: #9cdcfe; }
+  .note { color: #888; font-size: 12px; }
+</style>
+</head>
+<body>
+  <!-- Decoy: a lone "Continue" like a debugger toolbar. No decline button nearby, so it must NOT be clicked. -->
+  <div class="toolbar">
+    <span class="note">debug toolbar (decoy)</span>
+    <button data-decoy="toolbar-continue">Continue</button>
+    <button data-decoy="step-over">Step Over</button>
+    <button data-decoy="stop">Stop</button>
+  </div>
+
+  <div class="chat" id="chat"></div>
+  <div id="log"></div>
+
+  <div class="decoys">
+    <div><button class="primary" disabled data-decoy="disabled-allow">Allow</button> <button data-decoy="cancel-1">Cancel</button>
+      <span class="note">disabled Allow (decoy)</span></div>
+    <div><button class="primary" data-decoy="delete-files">Delete files</button> <button data-decoy="cancel-2">Cancel</button>
+      <span class="note">not an accept label (decoy)</span></div>
+  </div>
+
+<!-- Stand-in for VS Code's chat list: the row that owns a prompt carries the full command in its label. -->
+<div role="list" aria-label="Chat" id="rows" style="position:absolute; right:14px; top:60px; width:200px; color:#666; font-size:11px"></div>
+
+<script>
+  // Prompts in order. "danger" ones must be LEFT for the user (not clicked) by the command filter.
+  //  hidden: the command is invisible to UI Automation inside the card (like VS Code's code editor)
+  //          and only readable from a chat-row label elsewhere on the page.
+  const PROMPTS = [
+    { cmd: 'npm install left-pad', summary: 'Installs a package.', danger: false },
+    { cmd: 'Remove-Item -Recurse -Force .\\dist', summary: 'Runs a command.', danger: true, hidden: true },
+    { cmd: 'rm -rf node_modules', summary: 'Runs a command.', danger: true },
+    // Copilot asks a question (VS Code's question card classes): must be left for the user
+    { question: 'Which database should I use for this project?', options: ['PostgreSQL', 'SQLite', 'MongoDB', 'Let me decide later'], danger: true },
+    // a prompt with an Allow button but also choices: pressing Allow would pick for the user
+    { cmd: 'npm run deploy', summary: 'Deploys the app. Choose a target:', options: ['staging', 'production', 'both'], danger: true },
+    { cmd: 'git status', summary: 'Shows the working tree status.', danger: false }
+  ];
+  const HOLD_MS = 6000;   // a danger prompt still unanswered after this long counts as correctly held
+  let allowed = 0, held = 0, dangerAllowed = 0, skipped = 0, decoys = 0, shownAt = 0, finished = false;
+  const lat = [];
+  const chat = document.getElementById('chat');
+  const rows = document.getElementById('rows');
+  const logEl = document.getElementById('log');
+
+  function updateTitle() {
+    document.title = 'AutoAccept Test | allowed=' + allowed + ' held=' + held + ' dangerAllowed=' + dangerAllowed +
+      ' skipped=' + skipped + ' decoys=' + decoys + ' | lat=' + lat.map(x => x.toFixed(2)).join(',') + (finished ? ' | DONE' : '');
+  }
+  function log(s) { logEl.textContent += new Date().toLocaleTimeString() + '  ' + s + '\n'; }
+  function next(i) {
+    rows.innerHTML = '';
+    if (i + 1 < PROMPTS.length) setTimeout(() => showPrompt(i + 1), 1500);
+    else { finished = true; log('DONE'); updateTitle(); }
+  }
+
+  // Copilot-style tool confirmation: "Allow" with a "Skip" next to it.
+  function showPrompt(i) {
+    const p = PROMPTS[i];
+    chat.innerHTML = '';
+    const card = document.createElement('div');
+    const radios = (p.options || []).map(o => '<label style="display:block"><input type="radio" name="opt"> ' + o + '</label>').join('');
+    if (p.question) {
+      card.className = 'card chat-question-carousel-container chat-card-large';
+      card.setAttribute('role', 'group');
+      card.setAttribute('aria-label', 'Chat question: ' + p.question);
+      card.innerHTML = '<div><b>' + p.question + '</b></div>' + radios +
+        '<div class="buttons"><button id="skip">Skip</button><button class="primary" id="allow">Submit</button></div>';
+    } else {
+      card.className = 'card';
+      card.innerHTML =
+        '<div><b>Run command in terminal?</b></div>' +
+        (p.hidden ? '<pre aria-hidden="true" style="margin:4px 0">' + p.cmd + '</pre>'
+                  : '<div><code>' + p.cmd + '</code></div>') +
+        '<div class="note">' + p.summary + '</div>' + radios +
+        '<div class="buttons"><button class="primary" id="allow">Allow</button><button id="skip">Skip</button></div>';
+    }
+    p.cmd = p.cmd || p.question;
+    chat.appendChild(card);
+    if (p.hidden) {
+      const row = document.createElement('div');
+      row.setAttribute('role', 'listitem');
+      row.setAttribute('aria-label', 'Chat confirmation required: Run `pwsh` command?: ' + p.cmd);
+      row.textContent = '(chat row for prompt ' + (i + 1) + ')';
+      rows.appendChild(row);
+    }
+    shownAt = performance.now();
+    let done = false;
+    card.querySelector('#allow').onclick = () => {
+      if (done) return; done = true;
+      const s = (performance.now() - shownAt) / 1000;
+      if (p.danger) { dangerAllowed++; log('FAIL: dangerous prompt ' + (i + 1) + ' was allowed: ' + p.cmd); }
+      else { lat.push(s); allowed++; log('prompt ' + (i + 1) + ' allowed after ' + s.toFixed(2) + 's: ' + p.cmd); }
+      card.textContent = 'Allowed: ' + p.cmd;
+      updateTitle(); next(i);
+    };
+    card.querySelector('#skip').onclick = () => {
+      if (done) return; done = true;
+      skipped++; log('prompt ' + (i + 1) + ' skipped'); card.textContent = 'Skipped'; updateTitle(); next(i);
+    };
+    setTimeout(() => {
+      if (done) return; done = true;
+      if (p.danger) { held++; log('prompt ' + (i + 1) + ' correctly held for the user: ' + p.cmd); }
+      else log('FAIL: safe prompt ' + (i + 1) + ' was not accepted: ' + p.cmd);
+      card.textContent = 'Not clicked: ' + p.cmd;
+      updateTitle(); next(i);
+    }, HOLD_MS);
+  }
+
+  document.querySelectorAll('[data-decoy]').forEach(b => b.onclick = () => {
+    decoys++; log('DECOY clicked: ' + b.dataset.decoy); updateTitle();
+  });
+
+  updateTitle();
+  setTimeout(() => showPrompt(0), 2500);
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+// Test config: only watches the Edge window running test\permission-test.html.
+{
+  "processes": ["msedge"],
+  "titleContains": ["AutoAccept Test"],
+  "delayMs": 1000,
+  "pollMs": 500,
+  "hotkey": "Ctrl+Alt+F12"
+}

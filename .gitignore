@@ -1,0 +1,7 @@
+# Build output. The exe is published on the GitHub Releases page, not committed.
+dist/
+
+# Created at runtime next to the exe / test config
+*.log
+*.log.old
+test/*-history.log
